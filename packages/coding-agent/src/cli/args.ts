@@ -46,6 +46,7 @@ export interface Args {
 	listModels?: string | true;
 	offline?: boolean;
 	verbose?: boolean;
+	quietStartup?: boolean;
 	projectTrustOverride?: boolean;
 	messages: string[];
 	fileArgs: string[];
@@ -177,6 +178,8 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--verbose") {
 			result.verbose = true;
+		} else if (arg === "--quiet-startup") {
+			result.quietStartup = true;
 		} else if (arg === "--approve" || arg === "-a") {
 			result.projectTrustOverride = true;
 		} else if (arg === "--no-approve" || arg === "-na") {
@@ -271,6 +274,7 @@ ${chalk.bold("Options:")}
   --export <file>                Export session file to HTML and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
+  --quiet-startup                Hide startup help and loaded-resource details for this run
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)

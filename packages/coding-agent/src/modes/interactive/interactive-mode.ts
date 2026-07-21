@@ -312,6 +312,8 @@ export interface InteractiveModeOptions {
 	initialMessages?: string[];
 	/** Force verbose startup (overrides quietStartup setting) */
 	verbose?: boolean;
+	/** Hide startup help and resource details without changing persisted settings. */
+	quietStartup?: boolean;
 }
 
 export class InteractiveMode {
@@ -683,7 +685,7 @@ export class InteractiveMode {
 		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
 		this.fdPath = fdPath;
 
-		if (this.session.scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
+		if (this.session.scopedModels.length > 0 && this.shouldShowStartupDetails()) {
 			const modelList = this.session.scopedModels
 				.map((sm) => {
 					const thinkingStr = sm.thinkingLevel ? `:${sm.thinkingLevel}` : "";
@@ -723,7 +725,7 @@ export class InteractiveMode {
 		await this.themeController.applyFromSettings();
 
 		// Add header with keybindings from config (unless silenced)
-		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
+		if (this.shouldShowStartupDetails()) {
 			const logo = theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${this.version}`);
 
 			// Build startup instructions using keybinding hint helpers
@@ -1072,6 +1074,10 @@ export class InteractiveMode {
 		return this.options.verbose || this.toolOutputExpanded;
 	}
 
+	private shouldShowStartupDetails(): boolean {
+		return this.options.verbose || (!this.options.quietStartup && !this.settingsManager.getQuietStartup());
+	}
+
 	/**
 	 * Get a short path relative to the package root for display.
 	 */
@@ -1412,7 +1418,7 @@ export class InteractiveMode {
 		// Resource rendering is idempotent; chat clears no longer clear this separate container.
 		this.loadedResourcesContainer.clear();
 
-		const showListing = options?.force || this.options.verbose || !this.settingsManager.getQuietStartup();
+		const showListing = options?.force || this.shouldShowStartupDetails();
 		const showDiagnostics = showListing || options?.showDiagnosticsWhenQuiet === true;
 		if (!showListing && !showDiagnostics) {
 			return;

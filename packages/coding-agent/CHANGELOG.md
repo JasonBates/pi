@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `--quiet-startup` to hide startup help and loaded-resource details for one run without changing persisted settings.
+
 ## [0.81.1] - 2026-07-21
 
 ### New Features

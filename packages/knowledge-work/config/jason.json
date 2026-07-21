@@ -1,0 +1,13 @@
+{
+	"vaultPath": "~/Obsidian/VAULTS/Trinity",
+	"vaultName": "Trinity",
+	"capturePath": "+📥 inbox/Pi Captures.md",
+	"initialMode": "explore",
+	"theme": "trinity",
+	"obsidianCliPath": "/Applications/Obsidian.app/Contents/MacOS/obsidian-cli",
+	"plexHelperPath": "~/CODE/repos/claude-skills/plex/helper/comet.js",
+	"skillPaths": [
+		"~/CODE/repos/claude-skills/subjectiv",
+		"~/CODE/repos/claude-skills/obsidian-markdown"
+	]
+}

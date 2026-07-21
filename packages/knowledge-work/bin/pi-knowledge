@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+	SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+	SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
+	[[ "$SCRIPT_PATH" != /* ]] && SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_PATH"
+done
+
+PACKAGE_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+REPO_ROOT="$(cd "$PACKAGE_ROOT/../.." && pwd)"
+
+if [[ -f "$HOME/.zshenv" ]]; then
+	source "$HOME/.zshenv"
+fi
+
+export PI_KNOWLEDGE_CONFIG="${PI_KNOWLEDGE_CONFIG:-$PACKAGE_ROOT/config/jason.json}"
+export PI_KNOWLEDGE_VAULT="${PI_KNOWLEDGE_VAULT:-$HOME/Obsidian/VAULTS/Trinity}"
+export PI_SKIP_VERSION_CHECK="${PI_SKIP_VERSION_CHECK:-1}"
+
+cd "$PI_KNOWLEDGE_VAULT"
+exec "$REPO_ROOT/pi-test.sh" \
+	--quiet-startup \
+	--no-builtin-tools \
+	--no-extensions \
+	--no-skills \
+	--no-prompt-templates \
+	--no-themes \
+	--system-prompt "$PACKAGE_ROOT/system-prompt.md" \
+	--extension "$PACKAGE_ROOT" \
+	"$@"
