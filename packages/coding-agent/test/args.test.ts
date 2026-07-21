@@ -322,6 +322,13 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("--quiet-startup flag", () => {
+		test("parses --quiet-startup flag", () => {
+			const result = parseArgs(["--quiet-startup"]);
+			expect(result.quietStartup).toBe(true);
+		});
+	});
+
 	describe("--offline flag", () => {
 		test("parses --offline flag", () => {
 			const result = parseArgs(["--offline"]);
