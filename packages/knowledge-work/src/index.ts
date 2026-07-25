@@ -1,22 +1,27 @@
 import { existsSync, readFileSync } from "node:fs";
-import { appendFile, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	buildSemanticLookupCode,
+	canWriteInMode,
 	extractWikiLinks,
 	formatEffort,
 	formatModelLabel,
 	formatPromptSize,
+	frontmatterNameMatches,
 	isPathInside,
 	KNOWLEDGE_MODES,
 	type KnowledgeMode,
 	limitSearchPassages,
+	normalizeVaultNoteRequest,
+	parseModeSwitchRequest,
 	parseObsidianEvalJson,
+	rankVaultNotePaths,
 	stripPlexProgress,
 	toolsForMode,
 } from "./utils.ts";
@@ -24,14 +29,19 @@ import {
 export type { KnowledgeMode } from "./utils.ts";
 export {
 	buildSemanticLookupCode,
+	canWriteInMode,
 	extractWikiLinks,
 	formatEffort,
 	formatModelLabel,
 	formatPromptSize,
+	frontmatterNameMatches,
 	isPathInside,
 	KNOWLEDGE_MODES,
 	limitSearchPassages,
+	normalizeVaultNoteRequest,
+	parseModeSwitchRequest,
 	parseObsidianEvalJson,
+	rankVaultNotePaths,
 	stripPlexProgress,
 	toolsForMode,
 } from "./utils.ts";
@@ -92,6 +102,12 @@ interface ResearchDetails {
 
 interface AskDetails {
 	answered: boolean;
+}
+
+interface ResolvedVaultNote {
+	absolutePath: string;
+	relativePath: string;
+	healed: boolean;
 }
 
 const modeLabels: Record<KnowledgeMode, string> = {
@@ -174,6 +190,101 @@ async function resolveVaultPath(vaultPath: string, requestedPath: string, allowM
 	return candidate;
 }
 
+async function listVaultMarkdownPaths(
+	vaultRoot: string,
+	currentPath = vaultRoot,
+	signal?: AbortSignal,
+): Promise<string[]> {
+	if (signal?.aborted) throw signal.reason ?? new Error("Vault listing was cancelled");
+	const entries = await readdir(currentPath, { withFileTypes: true });
+	const paths: string[] = [];
+	for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+		if (signal?.aborted) throw signal.reason ?? new Error("Vault listing was cancelled");
+		if ([".git", ".obsidian", ".trash", "node_modules"].includes(entry.name)) continue;
+		const absolutePath = join(currentPath, entry.name);
+		if (entry.isDirectory()) {
+			paths.push(...(await listVaultMarkdownPaths(vaultRoot, absolutePath, signal)));
+		} else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+			paths.push(relative(vaultRoot, absolutePath));
+		}
+	}
+	return paths;
+}
+
+async function readFrontmatterPrefix(path: string): Promise<string> {
+	const handle = await open(path, "r");
+	try {
+		const buffer = Buffer.alloc(65_536);
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+		return buffer.toString("utf8", 0, bytesRead);
+	} finally {
+		await handle.close();
+	}
+}
+
+async function waitForRetry(milliseconds: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) throw signal.reason ?? new Error("The operation was cancelled");
+	await new Promise<void>((resolvePromise, rejectPromise) => {
+		let abort: (() => void) | undefined;
+		const timer = setTimeout(() => {
+			if (abort) signal?.removeEventListener("abort", abort);
+			resolvePromise();
+		}, milliseconds);
+		if (!signal) return;
+		abort = () => {
+			clearTimeout(timer);
+			rejectPromise(signal.reason ?? new Error("The operation was cancelled"));
+		};
+		signal.addEventListener("abort", abort, { once: true });
+	});
+}
+
+async function resolveVaultNote(vaultPath: string, request: string, signal?: AbortSignal): Promise<ResolvedVaultNote> {
+	const vaultRoot = await realpath(vaultPath);
+	const cleanedRequest = normalizeVaultNoteRequest(request);
+	if (!cleanedRequest) throw new Error("The note name is empty");
+	const requestedPath = extname(cleanedRequest).toLowerCase() === ".md" ? cleanedRequest : `${cleanedRequest}.md`;
+	const exactCandidate = resolve(vaultRoot, requestedPath);
+	if (!isPathInside(vaultRoot, exactCandidate)) throw new Error("That note path is outside the configured vault");
+	if (existsSync(exactCandidate)) {
+		const absolutePath = await resolveVaultPath(vaultRoot, requestedPath);
+		return { absolutePath, relativePath: relative(vaultRoot, absolutePath), healed: false };
+	}
+
+	const notePaths = await listVaultMarkdownPaths(vaultRoot, vaultRoot, signal);
+	const ranked = rankVaultNotePaths(requestedPath, notePaths);
+	if (ranked.length > 0) {
+		const topScore = ranked[0]?.score;
+		const strongest = ranked.filter((candidate) => candidate.score === topScore);
+		if (strongest.length === 1 && strongest[0]) {
+			const absolutePath = await resolveVaultPath(vaultRoot, strongest[0].path);
+			return { absolutePath, relativePath: strongest[0].path, healed: true };
+		}
+		throw new Error(
+			`More than one vault note matches “${cleanedRequest}”. Use one exact path:\n${strongest.map((candidate) => `- ${candidate.path}`).join("\n")}`,
+		);
+	}
+
+	const requestedName = basename(cleanedRequest, extname(cleanedRequest));
+	const aliasMatches: string[] = [];
+	for (const path of notePaths) {
+		if (signal?.aborted) throw signal.reason ?? new Error("Alias lookup was cancelled");
+		const absolutePath = await resolveVaultPath(vaultRoot, path);
+		const content = await readFrontmatterPrefix(absolutePath);
+		if (frontmatterNameMatches(requestedName, content)) aliasMatches.push(path);
+	}
+	if (aliasMatches.length === 1 && aliasMatches[0]) {
+		const absolutePath = await resolveVaultPath(vaultRoot, aliasMatches[0]);
+		return { absolutePath, relativePath: aliasMatches[0], healed: true };
+	}
+	if (aliasMatches.length > 1) {
+		throw new Error(
+			`More than one vault note uses the name “${requestedName}”. Use one exact path:\n${aliasMatches.map((path) => `- ${path}`).join("\n")}`,
+		);
+	}
+	throw new Error(`No vault note matches “${cleanedRequest}”. Search the vault to locate the current note name.`);
+}
+
 async function readTextSlice(path: string, offset = 1, limit = 2000): Promise<{ text: string; lineCount: number }> {
 	const info = await stat(path);
 	if (!info.isFile()) throw new Error("The requested path is not a file");
@@ -240,8 +351,8 @@ function modeInstructions(mode: KnowledgeMode, config: KnowledgeConfig): string 
 	].join("\n");
 	const specific: Record<KnowledgeMode, string> = {
 		explore:
-			"EXPLORE MODE: Follow the user's question across notes and sources. Make connections, take positions, and explain enough background that the result is self-contained. Do not change vault files.",
-		write: "WRITE MODE: Collaborate closely on prose. Retrieve the governing context and nearby draft first. Prefer exact, reviewable replacements or clearly named new notes. Do not overwrite an existing note wholesale.",
+			"EXPLORE MODE: Follow the user's question across notes and sources. Make connections, take positions, and explain enough background that the result is self-contained. Do not change vault files. The vault_save action may be visible but is locked outside Write mode.",
+		write: "WRITE MODE IS ACTIVE: vault_save is available and authorized for this turn. Ignore any earlier conversation claim that saving was unavailable; the current mode and tool list are authoritative. Collaborate closely on prose. Retrieve the governing context and nearby draft first. Prefer exact, reviewable replacements or clearly named new notes. Do not overwrite an existing note wholesale.",
 		review:
 			"REVIEW MODE: Read critically. Identify the few changes that materially improve truth, structure, voice, or coherence. Explain proposed changes before any mutation; this mode cannot write.",
 		plan: "PLAN MODE: Turn the present situation into the smallest useful next move. Prefer concrete breadcrumbs over new frameworks, and distinguish a real action from planning that merely feels productive. Do not change vault files.",
@@ -255,6 +366,7 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 
 	function updateUi(ctx: ExtensionContext): void {
 		const label = modeLabels[mode];
+		const quickSwitch = mode === "write" ? "/explore" : "/write";
 		ctx.ui.setTheme(config.theme);
 		ctx.ui.setToolsExpanded(false);
 		ctx.ui.setWorkingMessage(modeWorkingMessages[mode]);
@@ -265,7 +377,7 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 				return [
 					"",
 					truncateToWidth(theme.fg("accent", theme.bold(config.vaultName)), width),
-					truncateToWidth(theme.fg("muted", `${label}  ·  /mode  /today  /capture  /knowledge`), width),
+					truncateToWidth(theme.fg("muted", `${quickSwitch}  /mode  /today  /capture  /knowledge`), width),
 					"",
 				];
 			},
@@ -281,7 +393,10 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 					usage?.contextWindow ?? ctx.model?.contextWindow,
 					usage?.percent,
 				);
-				const status = truncateToWidth(theme.fg("dim", `${model}  ·  ${effort}  ·  ${promptSize}`), width);
+				const status = truncateToWidth(
+					theme.fg("dim", `${label}  ·  ${model}  ·  ${effort}  ·  ${promptSize}`),
+					width,
+				);
 				const padding = " ".repeat(Math.max(0, width - visibleWidth(status)));
 				return [`${padding}${status}`];
 			},
@@ -295,6 +410,12 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 		pi.setActiveTools(toolsForMode(mode).filter((tool) => available.has(tool)));
 		if (persist) pi.appendEntry("knowledge-work-mode", { mode });
 		updateUi(ctx);
+	}
+
+	function switchMode(nextMode: KnowledgeMode, ctx: ExtensionContext): void {
+		activateMode(nextMode, ctx, true);
+		const capability = nextMode === "write" ? "changes enabled" : "read only";
+		ctx.ui.notify(`${modeLabels[nextMode]} mode · ${capability}`, "info");
 	}
 
 	pi.registerTool({
@@ -336,6 +457,7 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 		description:
 			"First retrieval tool for broad, open-ended vault questions. Supply 3–6 genuinely different hypothetical phrasings. It runs each through Smart Connections via obsidian-cli eval, deduplicates note and block hits, and ranks notes with reciprocal-rank fusion. Read the strongest notes next; only then follow with exact vault_search for terminology and aliases.",
 		promptSnippet: "Search the Obsidian vault by meaning before literal search for open-ended questions",
+		executionMode: "sequential",
 		parameters: Type.Object({
 			queries: Type.Array(Type.String({ minLength: 1 }), {
 				minItems: 3,
@@ -354,27 +476,51 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 			}
 			const queries = [...new Set(params.queries.map((query) => query.trim()).filter(Boolean))];
 			if (queries.length < 3) throw new Error("Semantic search needs at least three distinct query phrasings");
-			const result = await pi.exec(
-				config.obsidianCliPath,
-				[`vault=${config.vaultName}`, "eval", `code=${buildSemanticLookupCode(queries, params.limit ?? 20)}`],
-				{ signal, timeout: 120_000 },
-			);
-			if (result.code !== 0) {
-				const reason = result.stderr.trim() || result.stdout.trim() || "obsidian-cli eval failed";
-				throw new Error(`Semantic search unavailable: ${reason}. State this explicitly and use vault_search.`);
-			}
+			const args = [
+				`vault=${config.vaultName}`,
+				"eval",
+				`code=${buildSemanticLookupCode(queries, params.limit ?? 20)}`,
+			];
+			let payload: SemanticSearchPayload | undefined;
+			let lastReason = "Smart Connections did not respond";
+			let launchedObsidian = false;
+			let attemptsUsed = 0;
+			for (let attempt = 1; attempt <= 3; attempt++) {
+				attemptsUsed = attempt;
+				const result = await pi.exec(config.obsidianCliPath, args, { signal, timeout: 120_000 });
+				if (result.code === 0) {
+					try {
+						const candidate = parseObsidianEvalJson<SemanticSearchPayload>(result.stdout);
+						if (candidate.ok) {
+							payload = candidate;
+							break;
+						}
+						lastReason = candidate.error ?? "Smart Connections is still initializing";
+						break;
+					} catch (error) {
+						lastReason = `could not read the Obsidian result (${String(error)})`;
+					}
+				} else {
+					lastReason = result.stderr.trim() || result.stdout.trim() || `obsidian-cli eval exited ${result.code}`;
+				}
 
-			let payload: SemanticSearchPayload;
-			try {
-				payload = parseObsidianEvalJson<SemanticSearchPayload>(result.stdout);
-			} catch (error) {
-				throw new Error(
-					`Semantic search unavailable: could not read the Obsidian result (${String(error)}). State this explicitly and use vault_search.`,
-				);
+				if (
+					!launchedObsidian &&
+					/(?:unable to find obsidian|obsidian is not running|failed to connect)/i.test(lastReason)
+				) {
+					const launch = await pi.exec("open", ["-a", "Obsidian"], { signal, timeout: 30_000 });
+					if (launch.code === 0) {
+						launchedObsidian = true;
+						await waitForRetry(4_000, signal);
+						continue;
+					}
+				}
+				if (attempt < 3) await waitForRetry(attempt * 1_000, signal);
 			}
-			if (!payload.ok) {
+			if (!payload) {
+				const attemptLabel = attemptsUsed > 1 ? ` after ${attemptsUsed} attempts` : "";
 				throw new Error(
-					`Semantic search unavailable: ${payload.error ?? "Smart Connections did not respond"}. State this explicitly and use vault_search.`,
+					`Semantic search unavailable${attemptLabel}: ${lastReason}. State this explicitly and use vault_search.`,
 				);
 			}
 
@@ -473,19 +619,24 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "vault_read",
 		label: "Read note",
-		description: "Read a markdown note from the configured Obsidian vault using its vault-relative path.",
+		description:
+			"Read an Obsidian note by vault-relative path, note name, or [[wikilink]]. Exact paths are preferred; unique moved filenames, MoC-prefixed names, titles, and aliases are resolved automatically.",
 		promptSnippet: "Read a specific Obsidian note",
 		parameters: Type.Object({
-			path: Type.String(),
+			path: Type.String({ description: "Vault-relative path, note name, or [[wikilink]]" }),
 			offset: Type.Optional(Type.Number({ minimum: 1 })),
 			limit: Type.Optional(Type.Number({ minimum: 1, maximum: 4000 })),
 		}),
-		async execute(_toolCallId, params) {
-			const path = await resolveVaultPath(config.vaultPath, params.path);
-			const result = await readTextSlice(path, params.offset, params.limit);
+		async execute(_toolCallId, params, signal) {
+			const note = await resolveVaultNote(config.vaultPath, params.path, signal);
+			const result = await readTextSlice(note.absolutePath, params.offset, params.limit);
+			const resolution = note.healed ? `Resolved vault note: ${note.relativePath}\n\n` : "";
 			return {
-				content: [{ type: "text", text: result.text }],
-				details: { label: basename(path, extname(path)), lineCount: result.lineCount } as ReadDetails,
+				content: [{ type: "text", text: `${resolution}${result.text}` }],
+				details: {
+					label: basename(note.absolutePath, extname(note.absolutePath)),
+					lineCount: result.lineCount,
+				} as ReadDetails,
 			};
 		},
 		renderCall(args, theme) {
@@ -506,12 +657,15 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "vault_connections",
 		label: "Trace connections",
-		description: "Find outgoing wikilinks and backlinks for an Obsidian note.",
+		description: "Find outgoing wikilinks and backlinks for an Obsidian note, resolving moved notes and wikilinks.",
 		promptSnippet: "Trace an Obsidian note's outgoing links and backlinks",
-		parameters: Type.Object({ path: Type.String() }),
+		parameters: Type.Object({
+			path: Type.String({ description: "Vault-relative path, note name, or [[wikilink]]" }),
+		}),
 		async execute(_toolCallId, params, signal) {
 			const vaultRoot = await realpath(config.vaultPath);
-			const path = await resolveVaultPath(vaultRoot, params.path);
+			const note = await resolveVaultNote(vaultRoot, params.path, signal);
+			const path = note.absolutePath;
 			const content = await readFile(path, "utf8");
 			const outgoing = extractWikiLinks(content);
 			const noteName = basename(path, extname(path));
@@ -551,7 +705,7 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 		name: "vault_save",
 		label: "Save note change",
 		description:
-			"Create a new vault note, append content, or make an exact text replacement. Never overwrites an existing note wholesale.",
+			"In Write mode, create a new vault note, append content, or make an exact text replacement. Never overwrites an existing note wholesale.",
 		promptSnippet: "Create, append to, or precisely revise an Obsidian note",
 		parameters: Type.Object({
 			action: StringEnum(["create", "append", "replace"] as const),
@@ -561,6 +715,9 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 			newText: Type.Optional(Type.String({ description: "Replacement text for replace" })),
 		}),
 		async execute(_toolCallId, params) {
+			if (!canWriteInMode(mode)) {
+				throw new Error(`Vault changes are locked in ${modeLabels[mode]} mode. Switch to Write mode first.`);
+			}
 			const allowMissing = params.action === "create";
 			const path = await resolveVaultPath(config.vaultPath, params.path, allowMissing);
 			if (params.action === "create") {
@@ -690,7 +847,7 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("mode", {
-		description: "Choose Explore, Write, Review, or Plan",
+		description: "Choose Explore, Write, Review, or Plan; for example /mode write",
 		handler: async (args, ctx) => {
 			let nextMode: KnowledgeMode | undefined;
 			const requested = args.trim().toLowerCase();
@@ -701,9 +858,23 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 				nextMode = KNOWLEDGE_MODES.find((candidate) => modeLabels[candidate] === selected);
 			}
 			if (!nextMode) return;
-			activateMode(nextMode, ctx, true);
-			ctx.ui.notify(`${modeLabels[nextMode]} mode`, "info");
+			switchMode(nextMode, ctx);
 		},
+	});
+
+	for (const candidate of KNOWLEDGE_MODES) {
+		pi.registerCommand(candidate, {
+			description: `Switch directly to ${modeLabels[candidate]} mode`,
+			handler: async (_args, ctx) => switchMode(candidate, ctx),
+		});
+	}
+
+	pi.on("input", async (event, ctx) => {
+		if (event.source === "extension" || event.images?.length) return { action: "continue" };
+		const requestedMode = parseModeSwitchRequest(event.text);
+		if (!requestedMode) return { action: "continue" };
+		switchMode(requestedMode, ctx);
+		return { action: "handled" };
 	});
 
 	pi.registerCommand("capture", {
@@ -739,7 +910,10 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 	pi.registerCommand("knowledge", {
 		description: "Show the knowledge-work commands",
 		handler: async (_args, ctx) => {
-			ctx.ui.notify("/mode · /today · /capture <thought> · /research · /synthesize · /draft · /review-note", "info");
+			ctx.ui.notify(
+				"/explore · /write · /review · /plan · /mode · /today · /capture <thought> · /research · /synthesize · /draft · /review-note",
+				"info",
+			);
 		},
 	});
 

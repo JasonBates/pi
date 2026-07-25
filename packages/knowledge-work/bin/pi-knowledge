@@ -19,6 +19,22 @@ export PI_KNOWLEDGE_CONFIG="${PI_KNOWLEDGE_CONFIG:-$PACKAGE_ROOT/config/jason.js
 export PI_KNOWLEDGE_VAULT="${PI_KNOWLEDGE_VAULT:-$HOME/Obsidian/VAULTS/Trinity}"
 export PI_SKIP_VERSION_CHECK="${PI_SKIP_VERSION_CHECK:-1}"
 
+DASHBOARD_ARGS=()
+if [[ "${PI_KNOWLEDGE_DASHBOARD:-1}" != "0" ]]; then
+	DASHBOARD_BRIDGE="${PI_KNOWLEDGE_DASHBOARD_BRIDGE:-$HOME/.pi/agent/npm/node_modules/@blackbelt-technology/pi-dashboard-extension/src/bridge.ts}"
+	if [[ ! -f "$DASHBOARD_BRIDGE" ]]; then
+		DASHBOARD_BRIDGE="$HOME/.pi/agent/npm/node_modules/@blackbelt-technology/pi-agent-dashboard/packages/extension/src/bridge.ts"
+	fi
+	if [[ -f "$DASHBOARD_BRIDGE" ]]; then
+		DASHBOARD_ARGS=(
+			--extension "$PACKAGE_ROOT/src/dashboard-wikilinks.ts"
+			--extension "$DASHBOARD_BRIDGE"
+		)
+	else
+		printf 'pi-knowledge: dashboard bridge not found; continuing without dashboard\n' >&2
+	fi
+fi
+
 cd "$PI_KNOWLEDGE_VAULT"
 exec "$REPO_ROOT/pi-test.sh" \
 	--quiet-startup \
@@ -28,5 +44,6 @@ exec "$REPO_ROOT/pi-test.sh" \
 	--no-prompt-templates \
 	--no-themes \
 	--system-prompt "$PACKAGE_ROOT/system-prompt.md" \
+	"${DASHBOARD_ARGS[@]}" \
 	--extension "$PACKAGE_ROOT" \
 	"$@"

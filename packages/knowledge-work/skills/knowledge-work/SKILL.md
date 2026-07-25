@@ -14,7 +14,7 @@ Work from the question or desired artifact, not from the mechanics of operating 
 - **Review** is read-only criticism. Identify the few changes that materially improve truth, structure, voice, or coherence.
 - **Plan** turns current reality into a concrete next breadcrumb. Do not generate another framework when an adequate plan already exists.
 
-Use `/mode` when the posture needs to change. Never change mode merely to make an unrequested mutation.
+Use `/write`, `/explore`, `/review`, or `/plan` for a direct switch; `/mode` opens the selector and `/mode write` also works. A plain explicit instruction such as “switch to write mode” is handled directly. Never change mode merely to make an unrequested mutation.
 
 ## Retrieval
 

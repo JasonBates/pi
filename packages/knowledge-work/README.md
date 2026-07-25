@@ -10,6 +10,10 @@ A quiet, Obsidian-first Pi surface for Jason's Trinity workflows. It keeps Pi's 
 
 The launcher opens in the Trinity vault with only knowledge-work tools enabled. Existing Pi authentication and sessions are reused.
 
+Pi loads extensions when the process starts. After updating this package, exit and relaunch `pi-knowledge`; an already-running terminal session will continue using the old mode commands and tool set.
+
+When PI Dashboard is installed as a Pi package, the launcher loads its bridge explicitly. Knowledge sessions therefore appear in the dashboard and remain controllable there without enabling the rest of the global extension catalogue. Set `PI_KNOWLEDGE_DASHBOARD=0` to launch without the bridge, or `PI_KNOWLEDGE_DASHBOARD_BRIDGE` to use a non-standard bridge path.
+
 ## Modes
 
 - **Explore**: semantic and exact vault retrieval, connections, and grounded web research; read-only.
@@ -17,7 +21,9 @@ The launcher opens in the Trinity vault with only knowledge-work tools enabled. 
 - **Review**: read-only critical review.
 - **Plan**: read-only orientation toward the smallest useful next move.
 
-Use `/mode` to switch. The chosen mode persists in the Pi session.
+Use `/write`, `/explore`, `/review`, or `/plan` to switch directly. `/mode` opens a selector, and `/mode write` also works. The chosen mode persists in the Pi session.
+
+The save action remains loaded so resumed sessions do not lose it when modes change. Its mutation guard is enforced inside the action itself: attempts outside Write mode fail before touching the vault.
 
 ## Commands
 
@@ -30,6 +36,8 @@ Use `/mode` to switch. The chosen mode persists in the Pi session.
 - `/connect <note>` finds useful backlinks, outgoing links, and MoCs.
 
 Press Ctrl+O to reveal the underlying detail for a knowledge action. The default display only shows a human-readable action and outcome.
+
+Assistant `[[wikilinks]]` render as highlighted links in PI Dashboard. Clicking one opens the note in the Trinity vault through Obsidian's `obsidian://open` URI scheme; `[[Note|aliases]]` use the alias as the visible label.
 
 ## Configuration
 

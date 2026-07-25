@@ -1,4 +1,4 @@
-import { isAbsolute, relative } from "node:path";
+import { basename, dirname, extname, isAbsolute, relative } from "node:path";
 
 export const KNOWLEDGE_MODES = ["explore", "write", "review", "plan"] as const;
 export type KnowledgeMode = (typeof KNOWLEDGE_MODES)[number];
@@ -14,7 +14,23 @@ const readOnlyTools = [
 ];
 
 export function toolsForMode(mode: KnowledgeMode): string[] {
-	return mode === "write" ? [...readOnlyTools, "vault_save"] : [...readOnlyTools];
+	void mode;
+	return [...readOnlyTools, "vault_save"];
+}
+
+export function canWriteInMode(mode: KnowledgeMode): boolean {
+	return mode === "write";
+}
+
+export function parseModeSwitchRequest(text: string): KnowledgeMode | undefined {
+	const match = text
+		.trim()
+		.toLowerCase()
+		.match(
+			/^(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:(?:switch|change|go|move|get|put)\s+(?:(?:me|us)\s+)?(?:(?:to|into|in)\s+)?)?(explore|write|review|plan)\s+mode(?:\s+(?:now|please))?[.!?]?$/,
+		);
+	const requested = match?.[1];
+	return requested && KNOWLEDGE_MODES.includes(requested as KnowledgeMode) ? (requested as KnowledgeMode) : undefined;
 }
 
 export function isPathInside(root: string, candidate: string): boolean {
@@ -29,6 +45,22 @@ export function extractWikiLinks(text: string): string[] {
 		if (target) links.add(target);
 	}
 	return [...links];
+}
+
+function escapeMarkdownLinkLabel(label: string): string {
+	return label.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+}
+
+export function renderObsidianWikiLinks(text: string, vaultName: string): string {
+	return text.replace(/(?<!!)\[\[([^\]|\n]+?)(?:\|([^\]\n]+))?\]\]/g, (wikilink, rawTarget, rawAlias) => {
+		const target = String(rawTarget).trim();
+		if (!target) return wikilink;
+		const targetWithoutHeading = target.split("#", 1)[0] ?? target;
+		const fallbackLabel = basename(targetWithoutHeading) || target;
+		const label = String(rawAlias ?? fallbackLabel).trim() || fallbackLabel;
+		const href = `obsidian://open?vault=${encodeURIComponent(vaultName)}&file=${encodeURIComponent(target)}`;
+		return `[${escapeMarkdownLinkLabel(label)}](${href})`;
+	});
 }
 
 export function stripPlexProgress(output: string): string {
@@ -48,9 +80,26 @@ export function buildSemanticLookupCode(queries: string[], limit: number): strin
 
 	return `(async () => {
 	try {
-		const plugin = app.plugins.plugins["smart-connections"];
-		const sources = plugin?.env?.smart_sources;
-		if (!sources?.lookup) return JSON.stringify({ ok: false, error: "Smart Connections smart_sources.lookup is unavailable" });
+		const pluginId = "smart-connections";
+		const readinessDeadline = Date.now() + 30000;
+		let plugin;
+		let env;
+		let sources;
+		do {
+			plugin = app.plugins.plugins[pluginId];
+			env = plugin?.env;
+			sources = env?.smart_sources;
+			if (typeof sources?.lookup === "function") break;
+			await new Promise((resolve) => setTimeout(resolve, 750));
+		} while (Date.now() < readinessDeadline);
+		if (typeof sources?.lookup !== "function") {
+			const stage = !plugin ? "plugin object missing" : !env ? "environment missing" : !sources ? "smart_sources missing" : "lookup method missing";
+			const enabled = app.plugins.enabledPlugins?.has(pluginId) ?? false;
+			return JSON.stringify({
+				ok: false,
+				error: \`Smart Connections did not become ready within 30 seconds (\${stage}; enabled: \${enabled})\`,
+			});
+		}
 		const queries = ${serializedQueries};
 		const fused = new Map();
 		for (let queryIndex = 0; queryIndex < queries.length; queryIndex++) {
@@ -109,6 +158,113 @@ export function limitSearchPassages(output: string, limit: number): string[] {
 		.map((line) => line.trimEnd())
 		.filter(Boolean)
 		.slice(0, Math.max(0, Math.floor(limit)));
+}
+
+export function normalizeVaultNoteRequest(request: string): string {
+	let normalized = request.trim();
+	if (normalized.startsWith("[[")) {
+		const closing = normalized.indexOf("]]", 2);
+		normalized = normalized.slice(2, closing === -1 ? undefined : closing);
+		const alias = normalized.indexOf("|");
+		if (alias !== -1) normalized = normalized.slice(0, alias);
+	}
+	const heading = normalized.indexOf("#");
+	if (heading !== -1) normalized = normalized.slice(0, heading);
+	return normalized.trim();
+}
+
+function normalizedNoteName(value: string): string {
+	return value.normalize("NFKC").replace(/[–—]/g, "-").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function withoutMocPrefix(value: string): string {
+	return value.replace(/^moc\s*-\s*/i, "");
+}
+
+export interface RankedVaultNotePath {
+	path: string;
+	score: number;
+}
+
+export function rankVaultNotePaths(request: string, candidatePaths: string[]): RankedVaultNotePath[] {
+	const cleanedRequest = normalizeVaultNoteRequest(request);
+	const requestedBase = normalizedNoteName(basename(cleanedRequest, extname(cleanedRequest)));
+	const requestedWithoutMoc = withoutMocPrefix(requestedBase);
+	const requestedHasMocPrefix = requestedBase !== requestedWithoutMoc;
+	const requestedDir = normalizedNoteName(dirname(cleanedRequest));
+	const requestedDirParts = requestedDir === "." ? [] : requestedDir.split("/").filter(Boolean);
+	const requestedMocFolder = requestedDirParts.some((part) => part.includes("moc") || part === "schools");
+
+	return candidatePaths
+		.map((path): RankedVaultNotePath | undefined => {
+			const candidateBase = normalizedNoteName(basename(path, extname(path)));
+			const candidateWithoutMoc = withoutMocPrefix(candidateBase);
+			const exactName = candidateBase === requestedBase;
+			const mocEquivalent = candidateWithoutMoc === requestedWithoutMoc;
+			if (!exactName && !mocEquivalent) return undefined;
+
+			const candidateDir = normalizedNoteName(dirname(path));
+			const candidateDirParts = candidateDir === "." ? [] : candidateDir.split("/").filter(Boolean);
+			let score = exactName ? 100 : 80;
+			const candidateHasMocPrefix = candidateBase !== candidateWithoutMoc;
+			if (candidateHasMocPrefix && (requestedHasMocPrefix || requestedMocFolder)) score += 50;
+			if (requestedDirParts.length > 0 && candidateDir === requestedDir) score += 30;
+			for (const part of requestedDirParts) {
+				if (candidateDirParts.includes(part)) score += 15;
+			}
+			return { path, score };
+		})
+		.filter((candidate): candidate is RankedVaultNotePath => Boolean(candidate))
+		.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+}
+
+function stripYamlScalar(value: string): string {
+	const trimmed = value.trim();
+	if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+		return trimmed.slice(1, -1).trim();
+	}
+	return trimmed;
+}
+
+export function extractFrontmatterNames(text: string): string[] {
+	const lines = text.split("\n");
+	if (lines[0]?.trim() !== "---") return [];
+	const end = lines.slice(1).findIndex((line) => line.trim() === "---");
+	if (end === -1) return [];
+
+	const frontmatter = lines.slice(1, end + 1);
+	const names: string[] = [];
+	for (let index = 0; index < frontmatter.length; index++) {
+		const line = frontmatter[index] ?? "";
+		const title = line.match(/^title:\s*(.+)$/i);
+		if (title?.[1]) names.push(stripYamlScalar(title[1]));
+
+		const aliases = line.match(/^aliases:\s*(.*)$/i);
+		if (!aliases) continue;
+		const inline = aliases[1]?.trim() ?? "";
+		if (inline.startsWith("[") && inline.endsWith("]")) {
+			for (const alias of inline.slice(1, -1).split(",")) {
+				const value = stripYamlScalar(alias);
+				if (value) names.push(value);
+			}
+		} else if (inline) {
+			names.push(stripYamlScalar(inline));
+		} else {
+			for (let aliasIndex = index + 1; aliasIndex < frontmatter.length; aliasIndex++) {
+				const alias = frontmatter[aliasIndex]?.match(/^\s+-\s+(.+)$/);
+				if (!alias?.[1]) break;
+				names.push(stripYamlScalar(alias[1]));
+				index = aliasIndex;
+			}
+		}
+	}
+	return [...new Set(names.filter(Boolean))];
+}
+
+export function frontmatterNameMatches(request: string, text: string): boolean {
+	const cleanedRequest = normalizeVaultNoteRequest(request);
+	const requested = normalizedNoteName(basename(cleanedRequest, extname(cleanedRequest)));
+	return extractFrontmatterNames(text).some((name) => normalizedNoteName(name) === requested);
 }
 
 export function formatModelLabel(name: string | undefined, id: string | undefined): string {
