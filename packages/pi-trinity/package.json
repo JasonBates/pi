@@ -1,0 +1,20 @@
+{
+	"name": "@jasonbates/pi-trinity",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "A Trinity-specific Pi surface for Jason's knowledge workflows",
+	"keywords": ["pi-package", "pi-trinity", "obsidian"],
+	"pi": {
+		"extensions": ["./src/index.ts"],
+		"skills": ["../knowledge-work/skills"],
+		"prompts": ["../knowledge-work/prompts"],
+		"themes": ["../knowledge-work/themes"]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	}
+}

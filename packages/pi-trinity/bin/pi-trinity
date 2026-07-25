@@ -15,13 +15,13 @@ if [[ -f "$HOME/.zshenv" ]]; then
 	source "$HOME/.zshenv"
 fi
 
-export PI_KNOWLEDGE_CONFIG="${PI_KNOWLEDGE_CONFIG:-$PACKAGE_ROOT/config/jason.json}"
-export PI_KNOWLEDGE_VAULT="${PI_KNOWLEDGE_VAULT:-$HOME/Obsidian/VAULTS/Trinity}"
+export PI_KNOWLEDGE_CONFIG="${PI_TRINITY_CONFIG:-$PACKAGE_ROOT/config/jason.json}"
+export PI_KNOWLEDGE_VAULT="${PI_TRINITY_VAULT:-$HOME/Obsidian/VAULTS/Trinity}"
 export PI_SKIP_VERSION_CHECK="${PI_SKIP_VERSION_CHECK:-1}"
 
 DASHBOARD_ARGS=()
-if [[ "${PI_KNOWLEDGE_DASHBOARD:-1}" != "0" ]]; then
-	DASHBOARD_BRIDGE="${PI_KNOWLEDGE_DASHBOARD_BRIDGE:-$HOME/.pi/agent/npm/node_modules/@blackbelt-technology/pi-dashboard-extension/src/bridge.ts}"
+if [[ "${PI_TRINITY_DASHBOARD:-1}" != "0" ]]; then
+	DASHBOARD_BRIDGE="${PI_TRINITY_DASHBOARD_BRIDGE:-$HOME/.pi/agent/npm/node_modules/@blackbelt-technology/pi-dashboard-extension/src/bridge.ts}"
 	if [[ ! -f "$DASHBOARD_BRIDGE" ]]; then
 		DASHBOARD_BRIDGE="$HOME/.pi/agent/npm/node_modules/@blackbelt-technology/pi-agent-dashboard/packages/extension/src/bridge.ts"
 	fi
@@ -31,7 +31,7 @@ if [[ "${PI_KNOWLEDGE_DASHBOARD:-1}" != "0" ]]; then
 			--extension "$DASHBOARD_BRIDGE"
 		)
 	else
-		printf 'pi-knowledge: dashboard bridge not found; continuing without dashboard\n' >&2
+		printf 'pi-trinity: dashboard bridge not found; continuing without dashboard\n' >&2
 	fi
 fi
 

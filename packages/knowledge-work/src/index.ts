@@ -49,6 +49,7 @@ export {
 interface KnowledgeConfig {
 	vaultPath: string;
 	vaultName: string;
+	surfaceName: string;
 	capturePath: string;
 	initialMode: KnowledgeMode;
 	theme: string;
@@ -147,6 +148,7 @@ function loadConfig(cwd: string): KnowledgeConfig {
 	const defaults: KnowledgeConfig = {
 		vaultPath: join(homedir(), "Obsidian", "VAULTS", "Trinity"),
 		vaultName: "Trinity",
+		surfaceName: "",
 		capturePath: "+📥 inbox/Pi Captures.md",
 		initialMode: "explore",
 		theme: "trinity",
@@ -162,6 +164,7 @@ function loadConfig(cwd: string): KnowledgeConfig {
 
 	return {
 		...merged,
+		surfaceName: merged.surfaceName.trim() || merged.vaultName,
 		vaultPath: expandHome(process.env.PI_KNOWLEDGE_VAULT ?? merged.vaultPath),
 		obsidianCliPath: expandHome(merged.obsidianCliPath),
 		initialMode: isKnowledgeMode(merged.initialMode) ? merged.initialMode : defaults.initialMode,
@@ -371,12 +374,12 @@ export default function knowledgeWork(pi: ExtensionAPI) {
 		ctx.ui.setToolsExpanded(false);
 		ctx.ui.setWorkingMessage(modeWorkingMessages[mode]);
 		ctx.ui.setHiddenThinkingLabel("Working notes");
-		ctx.ui.setTitle(`${config.vaultName} — ${label}`);
+		ctx.ui.setTitle(`${config.surfaceName} — ${label}`);
 		ctx.ui.setHeader((_tui, theme) => ({
 			render(width: number): string[] {
 				return [
 					"",
-					truncateToWidth(theme.fg("accent", theme.bold(config.vaultName)), width),
+					truncateToWidth(theme.fg("accent", theme.bold(config.surfaceName)), width),
 					truncateToWidth(theme.fg("muted", `${quickSwitch}  /mode  /today  /capture  /knowledge`), width),
 					"",
 				];
